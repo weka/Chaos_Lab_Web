@@ -1,0 +1,26 @@
+services:
+  server:
+    build:
+      context: .
+      dockerfile: Dockerfile.server
+    image: ecs-chaos-lab-creator-server:latest
+    ports:
+      - "5000:5000"
+    volumes:
+            - ~/.aws:/root/.aws:ro 
+    environment:
+      - FLASK_APP=server/main.py
+      - FLASK_ENV=production
+    depends_on:
+      - client
+
+  client:
+    build:
+      context: .
+      dockerfile: Dockerfile.client
+      args:
+        VITE_APP_BASE_URL: "http://localhost:5000"
+    image: ecs-chaos-lab-creator-client:latest
+    ports:
+      - "80:80"
+

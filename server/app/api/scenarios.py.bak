@@ -1,0 +1,95 @@
+from flask import jsonify, request, current_app
+from app.api import bp
+
+import requests
+import subprocess
+import shutil
+import os
+import hashlib
+import time
+import zipfile
+import boto3  # AWS SDK for Python
+from botocore.exceptions import NoCredentialsError, ClientError
+
+@bp.route('/scenarios', methods=['POST'])
+def create_scenario():
+    # Extract variables from the POST request
+    data = request.json
+    s3_bucket_name = 'cst-chaos-lab'
+    if not data:
+        return jsonify({'error': 'No data provided'}), 400
+
+    button_variable = data.get('repo')
+####### Get file /data from github for reading later
+    tf_file = requests.get(f'https://raw.githubusercontent.com/NanoBlazer915/CST-Scenario-Lab/refs/heads/main/scenario-tfs/{button_variable}/{button_variable}.tf')
+
+    if not all([button_variable, tf_file, s3_bucket_name]):
+        return jsonify({'error': 'Missing required parameters'}), 400
+
+    try:
+        # Create directory based on button variable and hash
+        print("Creating new directory based on variable and hash...")
+        timestamp = str(time.time())
+        hash_str = hashlib.sha256(timestamp.encode()).hexdigest()[:8]
+        new_dir_name = f"{button_variable}_{hash_str}"
+        os.makedirs(new_dir_name, exist_ok=True)
+        print(f"Directory '{new_dir_name}' created.\n")
+
+
+        # Save the Terraform file into the new directory
+        tf_file_path = os.path.join(new_dir_name, 'main.tf')
+        with open(tf_file_path, 'w') as file:
+            file.write(tf_file)  # Assuming tf_file contains the content of the Terraform file
+        print(f"Terraform file saved to '{tf_file_path}'.\n")
+
+        # Initialize and apply Terraform configuration
+        print("Initializing and applying Terraform configuration...")
+        terraform_dir = new_dir_name
+        subprocess.run(['terraform', 'init'], check=True, cwd=terraform_dir)
+        subprocess.run(['terraform', 'apply', '--auto-approve'], check=True, cwd=terraform_dir)
+        print("Terraform operations completed successfully.\n")
+
+        # Zip contents of the new directory
+        print(f"Zipping contents of '{new_dir_name}'...")
+        zip_filename = f"{new_dir_name}.zip"
+        with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
+            for root, dirs, files in os.walk(new_dir_name):
+                for file in files:
+                    file_path = os.path.join(root, file)
+                    arcname = os.path.relpath(file_path, new_dir_name)
+                    zipf.write(file_path, arcname)
+        print(f"Directory zipped into '{zip_filename}'.\n")
+
+#        # Upload zip file to S3
+#        print(f"Uploading '{zip_filename}' to S3 bucket '{s3_bucket_name}'...")
+#        s3_client = boto3.client('s3')
+#        s3_client.upload_file(zip_filename, s3_bucket_name, zip_filename)
+#        print("Upload completed successfully.\n")
+#
+#        print("Pipeline completed successfully.")
+#
+#        # Optionally, send the zip file back to the user or provide a download link
+#        # For simplicity, we'll just return a success message
+#
+#        return jsonify({'message': 'Scenario created and uploaded to S3!'})
+#
+    except subprocess.CalledProcessError as e:
+        error_msg = f"An error occurred while running command: {e.cmd}\nReturn code: {e.returncode}\nOutput:\n{e.output.decode('utf-8') if e.output else 'No output'}"
+        print(error_msg)
+        return jsonify({'error': error_msg}), 500
+    except (NoCredentialsError, ClientError) as e:
+        error_msg = f"AWS credentials not found or error in AWS operation: {str(e)}"
+        print(error_msg)
+        return jsonify({'error': error_msg}), 500
+    except Exception as e:
+        error_msg = f"An unexpected error occurred: {str(e)}"
+        print(error_msg)
+        return jsonify({'error': error_msg}), 500
+
+@bp.after_request
+def after_request(response):
+    response.headers['Access-Control-Allow-Origin'] = '*'
+    response.headers['Access-Control-Allow-Headers'] = 'Content-Type'
+    response.headers['Access-Control-Allow-Methods'] = 'OPTIONS, GET, POST, PUT, DELETE'
+    return response
+
