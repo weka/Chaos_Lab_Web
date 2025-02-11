@@ -7,10 +7,12 @@ services:
     ports:
       - "5000:5000"
     volumes:
-            - ~/.aws:/root/.aws:ro 
+      - ~/.aws:/root/.aws:ro 
     environment:
       - FLASK_APP=server/main.py
       - FLASK_ENV=production
+      - GITHUB_OWNER=weka
+      - GITHUB_REPO=Chaos-Lab
     depends_on:
       - client
 
