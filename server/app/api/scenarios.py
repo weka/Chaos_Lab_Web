@@ -4,6 +4,8 @@ import hashlib
 import subprocess
 import zipfile
 import base64
+import glob
+import shutil
 import requests
 from flask import Blueprint, jsonify, request, current_app, send_from_directory
 from app.api import bp
@@ -26,8 +28,7 @@ def create_scenario():
             return jsonify({'error': 'Missing required parameter: repo'}), 400
 
         # Get region from payload; default to "virginia" if not provided.
-        let_region = data.get('region') or 'virginia'
-        region = let_region.lower()
+        region = (data.get('region') or 'virginia').lower()
 
         s3_bucket_name = 'cst-chaos-lab'  # Replace with your actual S3 bucket name
         current_app.logger.info(f"Processing request for repo: {button_variable}")
@@ -86,7 +87,37 @@ def create_scenario():
             file.write(tf_file_content)
         current_app.logger.debug(f"Main Terraform file written to: {tf_file_path}")
 
-        # --- New: If a region is provided, fetch the corresponding region file ---
+        # --- New: Prepare local scenario files for terminal access ---
+        # Create a base folder for scenario files (if it doesn't exist)
+        scenario_files_base = os.path.join(current_app.root_path, 'scenario_files')
+        os.makedirs(scenario_files_base, exist_ok=True)
+        # Create a subfolder named after new_dir_name
+        scenario_files_dir = os.path.join(scenario_files_base, new_dir_name)
+        os.makedirs(scenario_files_dir, exist_ok=True)
+
+        # Copy the scenario_chaos_ip.txt file to the scenario_files_dir.
+        ip_file_source = os.path.join(new_dir_name, "scenario_chaos_ip.txt")
+        if os.path.exists(ip_file_source):
+            shutil.copy(ip_file_source, scenario_files_dir)
+            current_app.logger.debug("Copied scenario_chaos_ip.txt to scenario_files_dir")
+        else:
+            current_app.logger.error("scenario_chaos_ip.txt not found in the scenario folder.")
+
+        # Find and copy the first .pem file found in new_dir_name
+        pem_files = glob.glob(os.path.join(new_dir_name, "*.pem"))
+        if pem_files:
+            shutil.copy(pem_files[0], scenario_files_dir)
+            current_app.logger.debug(f"Copied PEM file {pem_files[0]} to scenario_files_dir")
+        else:
+            current_app.logger.error("No .pem file found in the scenario folder.")
+
+        # Set an environment variable so that terminal.py can find these files
+        os.environ["SCENARIO_FOLDER"] = scenario_files_dir
+        current_app.logger.info(f"Scenario files for terminal saved to: {scenario_files_dir}")
+
+        # --- End of local scenario files preparation ---
+
+        # --- Fetch and write the region file ---
         region_map = {
             "california": "california-us.auto.tfvars",
             "london": "london.auto.tfvars",
@@ -139,16 +170,16 @@ def create_scenario():
                     zipf.write(file_path, arcname)
         current_app.logger.info(f"Zipped directory to: {zip_filename}")
 
-        # Move the ZIP file to a directory accessible by Flask
+        # Move the ZIP file to a downloads directory
         downloads_dir = os.path.join(current_app.root_path, 'downloads')
         os.makedirs(downloads_dir, exist_ok=True)
         zip_file_path = os.path.join(downloads_dir, zip_filename)
         os.rename(zip_filename, zip_file_path)
         current_app.logger.info(f"Moved ZIP file to downloads directory: {zip_file_path}")
 
-        # **Start the S3 upload script as a separate process**
+        # Start the S3 upload script as a separate process
         s3_key = f"scenarios/{zip_filename}"
-        # Corrected path: current_app.root_path already points to "server/app"
+        # Corrected path: current_app.root_path is "server/app"
         upload_script_path = os.path.join(current_app.root_path, 'api', 'upload_to_s3.py')
         if not os.access(upload_script_path, os.X_OK):
             os.chmod(upload_script_path, 0o755)

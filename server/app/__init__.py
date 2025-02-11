@@ -1,16 +1,15 @@
 from flask import Flask
-from config import Config
+from flask_cors import CORS
+import terminal as terminal_module
 
-def create_app(config_class=Config):
-    app = Flask(__name__, template_folder="../")
-    app.config.from_object(config_class)
-
+def create_app():
+    app = Flask(__name__)
+    # Enable CORS on all routes under /api/*
+    CORS(app, resources={r"/api/*": {"origins": "*"}})
+    
+    # ... your other app setup code, for example registering blueprints
     from app.api import bp as api_bp
     app.register_blueprint(api_bp, url_prefix='/api')
-
-    @app.route('/')
-    def index():
-        return "Flask app is running! Use /api/scenarios for API endpoints."
-
+    
     return app
 
