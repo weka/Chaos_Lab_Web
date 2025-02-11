@@ -11,7 +11,7 @@ from app.api import bp
 @bp.route('/scenarios', methods=['POST', 'OPTIONS', 'HEAD'])
 def create_scenario():
     """Handle POST requests to create a scenario and make it available for download."""
-    # Quickly handle OPTIONS or HEAD requests
+    # Immediately respond to OPTIONS or HEAD requests.
     if request.method in ['OPTIONS', 'HEAD']:
         return '', 200
 
@@ -25,15 +25,18 @@ def create_scenario():
         if not button_variable:
             return jsonify({'error': 'Missing required parameter: repo'}), 400
 
+        # Get region from payload; default to "virginia" if not provided.
+        let_region = data.get('region') or 'virginia'
+        region = let_region.lower()
+
         s3_bucket_name = 'cst-chaos-lab'  # Replace with your actual S3 bucket name
         current_app.logger.info(f"Processing request for repo: {button_variable}")
 
-        # Build the GitHub API URL to fetch the Terraform file from your private repo
+        # Build the GitHub API URL for the main Terraform file
         owner = os.environ.get("GITHUB_OWNER", "weka")
         repo = os.environ.get("GITHUB_REPO", "Chaos-Lab")
-        # The file path inside your repository
-        path = f"scenario-tfs/{button_variable}/{button_variable}.tf"
-        api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
+        main_path = f"scenario-tfs/{button_variable}/{button_variable}.tf"
+        api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{main_path}"
 
         # Set up headers for GitHub API authentication
         github_token = os.environ.get("GITHUB_TOKEN")
@@ -58,37 +61,70 @@ def create_scenario():
         try:
             tf_file_content = base64.b64decode(json_data["content"]).decode('utf-8')
         except Exception as e:
-            current_app.logger.error(f"Error decoding content: {e}")
-            return jsonify({'error': 'Failed to decode file content.'}), 500
+            current_app.logger.error(f"Error decoding main file content: {e}")
+            return jsonify({'error': 'Failed to decode main file content.'}), 500
 
-        # --- Rewrite the module source URL ---
-        # The original module source is expected to be the SSH URL:
+        # Rewrite the module source URL from SSH to HTTPS (with token)
         original_source = "git::ssh://git@github.com/weka/Chaos-Lab.git"
-        # Replace it with an HTTPS URL that embeds the GitHub token.
-        # (Note: Embedding tokens in URLs can expose them in logs; consider using a secure method in production.)
         if github_token:
             replacement = f"git::https://{github_token}@github.com/weka/Chaos-Lab.git"
         else:
             replacement = "git::https://github.com/weka/Chaos-Lab.git"
         tf_file_content = tf_file_content.replace(original_source, replacement)
-        current_app.logger.debug("Rewritten Terraform file module source URL.")
+        current_app.logger.debug("Rewritten Terraform module source URL.")
 
-        # --- Continue with your existing processing logic ---
-
-        # Create a unique directory for processing the Terraform file
+        # Create a unique directory for processing
         timestamp = str(time.time())
         hash_str = hashlib.sha256(timestamp.encode()).hexdigest()[:8]
         new_dir_name = f"{button_variable}_{hash_str}"
         os.makedirs(new_dir_name, exist_ok=True)
         current_app.logger.debug(f"Created directory: {new_dir_name}")
 
-        # Write the Terraform file to the directory
+        # Write the main Terraform file to disk
         tf_file_path = os.path.join(new_dir_name, 'main.tf')
         with open(tf_file_path, 'w') as file:
             file.write(tf_file_content)
-        current_app.logger.debug(f"Terraform file written to: {tf_file_path}")
+        current_app.logger.debug(f"Main Terraform file written to: {tf_file_path}")
 
-        # Run Terraform commands: init and apply
+        # --- New: If a region is provided, fetch the corresponding region file ---
+        region_map = {
+            "california": "california-us.auto.tfvars",
+            "london": "london.auto.tfvars",
+            "mumbai": "mumbai.auto.tfvars",
+            "sydney": "sydney.auto.tfvars",
+            "virginia": "virginia-us.auto.tfvars"
+        }
+        region_file = region_map.get(region)
+        if not region_file:
+            current_app.logger.error("Invalid region provided.")
+            return jsonify({'error': 'Invalid region provided.'}), 400
+
+        region_path = f"region-vars/{region_file}"
+        region_api_url = f"https://api.github.com/repos/{owner}/{repo}/contents/{region_path}"
+        current_app.logger.debug(f"Fetching region file from: {region_api_url}")
+
+        region_response = requests.get(region_api_url, headers=headers)
+        if region_response.status_code != 200:
+            current_app.logger.error(f"Failed to fetch region file: {region_response.status_code}")
+            return jsonify({'error': f"Failed to fetch region file: {region_response.status_code}"}), 404
+
+        region_json = region_response.json()
+        if "content" not in region_json:
+            current_app.logger.error("No 'content' key in GitHub API response for region file")
+            return jsonify({'error': "Invalid response from GitHub for region file."}), 500
+
+        try:
+            region_file_content = base64.b64decode(region_json["content"]).decode('utf-8')
+        except Exception as e:
+            current_app.logger.error(f"Error decoding region file content: {e}")
+            return jsonify({'error': 'Failed to decode region file content.'}), 500
+
+        region_file_path = os.path.join(new_dir_name, region_file)
+        with open(region_file_path, 'w') as region_file_handle:
+            region_file_handle.write(region_file_content)
+        current_app.logger.info(f"Region file '{region_file}' written to: {region_file_path}")
+
+        # Run Terraform commands (init and apply)
         subprocess.run(['terraform', 'init'], check=True, cwd=new_dir_name)
         subprocess.run(['terraform', 'apply', '--auto-approve'], check=True, cwd=new_dir_name)
         current_app.logger.info("Terraform operations completed successfully.")
@@ -112,11 +148,12 @@ def create_scenario():
 
         # **Start the S3 upload script as a separate process**
         s3_key = f"scenarios/{zip_filename}"
-        upload_script_path = os.path.join(current_app.root_path, 'server', 'app', 'api', 'upload_to_s3.py')
+        # Corrected path: current_app.root_path already points to "server/app"
+        upload_script_path = os.path.join(current_app.root_path, 'api', 'upload_to_s3.py')
         if not os.access(upload_script_path, os.X_OK):
             os.chmod(upload_script_path, 0o755)
         command = [
-            'python',  # Or use 'python3' depending on your environment
+            'python',  # Or 'python3' as needed
             upload_script_path,
             zip_file_path,
             s3_bucket_name,
@@ -125,7 +162,6 @@ def create_scenario():
         subprocess.Popen(command)
         current_app.logger.info(f"Started upload script: {' '.join(command)}")
 
-        # Return a URL to download the ZIP file
         download_url = f"/api/downloads/{zip_filename}"
         return jsonify({
             'message': 'Scenario created!',

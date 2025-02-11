@@ -1,14 +1,16 @@
 import * as React from 'react'
 import PropTypes from 'prop-types'
-// import CustomTextField from './CustomTextField';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
-
 import TextField from '@mui/material/TextField'
 
+// Add these imports:
+import FormControl from '@mui/material/FormControl'
+import InputLabel from '@mui/material/InputLabel'
+import Select from '@mui/material/Select'
+import MenuItem from '@mui/material/MenuItem'
+
 import { addClasses } from '../utils'
-
 import { useScenarioContext } from './context'
-
 import Conditionally from './Conditionally'
 import BackButton from './BackButton'
 
@@ -168,6 +170,24 @@ function ScenarioCard(props) {
           size="small"
           value={formValues.expiration_hours}
         />
+<FormControl fullWidth margin="normal" size="small" required>
+  <InputLabel id="region-label">Region</InputLabel>
+  <Select
+    labelId="region-label"
+    name="region"
+    value={formValues.region || ''}
+    onChange={handleChange}
+    label="Region"
+  >
+    <MenuItem value="california">California</MenuItem>
+    <MenuItem value="london">London</MenuItem>
+    <MenuItem value="mumbai">Mumbai</MenuItem>
+    <MenuItem value="sydney">Sydney</MenuItem>
+    <MenuItem value="virginia">Virginia</MenuItem>
+  </Select>
+</FormControl>
+
+
       </Conditionally>
 
       <span className={styles.form_button}>
