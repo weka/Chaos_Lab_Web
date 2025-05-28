@@ -3,9 +3,10 @@ import React, { useEffect, useRef, useCallback, memo } from 'react';
 import PropTypes from 'prop-types';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
+import { WebLinksAddon } from 'xterm-addon-web-links';
 import { io } from 'socket.io-client';
 import 'xterm/css/xterm.css';
-import './TerminalView.css'; // Make sure this file exists or remove if not used
+import './TerminalView.css';
 
 const API_BASE_URL = import.meta.env.VITE_APP_BASE_URL || 'http://localhost:5000';
 
@@ -20,7 +21,7 @@ function TerminalView({ sessionId, websocketPath, onCloseTerminal }) {
       try {
         fitAddonRef.current.fit();
         const { cols, rows } = xtermInstanceRef.current;
-        socketRef.current.emit('resize', { // This event name seems to work based on logs
+        socketRef.current.emit('resize', {
           sessionId: sessionId,
           cols: cols,
           rows: rows,
@@ -35,6 +36,7 @@ function TerminalView({ sessionId, websocketPath, onCloseTerminal }) {
   useEffect(() => {
     let term;
     let fitAddon;
+    let webLinksAddon;
     let socket;
 
     if (termContainerRef.current && !xtermInstanceRef.current && sessionId && websocketPath) {
@@ -42,25 +44,46 @@ function TerminalView({ sessionId, websocketPath, onCloseTerminal }) {
 
       term = new Terminal({
         cursorBlink: true,
-        convertEol: true,
+        convertEol: true, // This handles line endings
         rows: 24,
         cols: 80,
-        fontSize: 14,
-        fontFamily: 'monospace, "Courier New", Courier',
+        fontSize: 15,
+        fontFamily: '"Fira Code", "JetBrains Mono", "DejaVu Sans Mono", Consolas, "Liberation Mono", Menlo, Courier, monospace',
         theme: {
-          background: '#1e1e1e',
-          foreground: '#00FF00',
-          cursor: '#00FF00',
-          selectionBackground: '#555555',
+          background: '#282828',
+          foreground: '#ebdbb2',
+          cursor: '#fe8019',
+          cursorAccent: '#3c3836',
+          selectionBackground: 'rgba(146, 131, 116, 0.5)',
+          black: '#282828',
+          brightBlack: '#928374',
+          red: '#cc241d',
+          brightRed: '#fb4934',
+          green: '#98971a',
+          brightGreen: '#b8bb26',
+          yellow: '#d79921',
+          brightYellow: '#fabd2f',
+          blue: '#458588',
+          brightBlue: '#83a598',
+          magenta: '#b16286',
+          brightMagenta: '#d3869b',
+          cyan: '#689d6a',
+          brightCyan: '#8ec07c',
+          white: '#a89984',
+          brightWhite: '#ebdbb2',
         },
         allowProposedApi: true,
-        scrollback: 1000,
+        scrollback: 2000,
+        // windowsMode: os.platform() === 'win32', // REMOVED THIS LINE
       });
       xtermInstanceRef.current = term;
 
       fitAddon = new FitAddon();
       fitAddonRef.current = fitAddon;
       term.loadAddon(fitAddon);
+
+      webLinksAddon = new WebLinksAddon();
+      term.loadAddon(webLinksAddon);
 
       term.open(termContainerRef.current);
       try {
@@ -87,40 +110,40 @@ function TerminalView({ sessionId, websocketPath, onCloseTerminal }) {
         setTimeout(sendResize, 150);
       });
 
-      socket.on('pty-output', (data) => { // This event name seems to work for receiving
+      socket.on('pty-output', (data) => {
         if (data && typeof data.output === 'string') {
           term.write(data.output);
         }
       });
       
       socket.on('disconnect', (reason) => {
-        const msg = `\r\n\x1b[31mSocket.IO Disconnected: ${reason}. SID was: ${socket.id || 'N/A'}\x1b[0m`;
-        term.writeln(msg);
-        console.error(`[TerminalView ${sessionId}] Socket.IO Disconnected: ${reason}. Previous SID: ${socket.id || 'N/A'}`);
+        const msg = `\r\n\x1b[31mSocket.IO Disconnected: ${reason}. SID was: ${socket?.id || 'N/A'}\x1b[0m`;
+        if (term && term.element) term.writeln(msg);
+        console.error(`[TerminalView ${sessionId}] Socket.IO Disconnected: ${reason}. Previous SID: ${socket?.id || 'N/A'}`);
       });
 
       socket.on('connect_error', (error) => {
-        term.writeln(`\r\n\x1b[31mSocket.IO Connection Error: ${error.message}\x1b[0m`);
+        const errorMsg = `\r\n\x1b[31mSocket.IO Connection Error: ${error.message}\x1b[0m`;
+        if (term && term.element) term.writeln(errorMsg);
         console.error(`[TerminalView ${sessionId}] Socket.IO connection error:`, error);
       });
 
       term.onData((data) => {
-        console.log(`[TerminalView ${sessionId}] Data from xterm:`, data);
+        // console.log(`[TerminalView ${sessionId}] Data from xterm:`, data);
         if (socketRef.current && socketRef.current.connected) {
           const payload = { input: data, sessionId: sessionId };
-          // CHANGED EVENT NAME HERE:
-          console.log(`[TerminalView ${sessionId}] Emitting 'terminalInput' with payload:`, payload); 
-          socketRef.current.emit('terminalInput', payload, (ack) => { // CHANGED EVENT NAME
+          // console.log(`[TerminalView ${sessionId}] Emitting 'terminalInput' with payload:`, payload);
+          socketRef.current.emit('terminalInput', payload, (ack) => {
             if (ack && ack.status === 'ok') {
-              console.log(`[TerminalView ${sessionId}] Backend ACKNOWLEDGED terminalInput:`, ack);
+              // console.log(`[TerminalView ${sessionId}] Backend ACKNOWLEDGED terminalInput:`, ack);
             } else {
               console.error(`[TerminalView ${sessionId}] Backend DID NOT acknowledge terminalInput or error:`, ack);
-              term.writeln(`\r\n\x1b[31m[Client: Error sending input to backend: ${ack?.message || 'No acknowledgement'}]\x1b[0m`);
+              if (term && term.element) term.writeln(`\r\n\x1b[31m[Client: Error sending input: ${ack?.message || 'No ack'}]\x1b[0m`);
             }
           });
         } else {
           console.warn(`[TerminalView ${sessionId}] Socket not connected, dropping input: ${data}`);
-          term.writeln('\r\n\x1b[31m[Client: Not connected to server. Cannot send input.]\x1b[0m');
+          if (term && term.element) term.writeln('\r\n\x1b[31m[Client: Not connected. Cannot send input.]\x1b[0m');
         }
       });
 
@@ -132,6 +155,7 @@ function TerminalView({ sessionId, websocketPath, onCloseTerminal }) {
       window.removeEventListener('resize', sendResize);
       if (socketRef.current) {
         console.log(`[TerminalView ${sessionId}] Disconnecting socket on unmount.`);
+        socketRef.current.emit('disconnect_request', {sessionId: sessionId});
         socketRef.current.disconnect();
         socketRef.current = null;
       }
@@ -146,7 +170,9 @@ function TerminalView({ sessionId, websocketPath, onCloseTerminal }) {
     };
   }, [sessionId, websocketPath, sendResize, onCloseTerminal]);
 
-  return <div ref={termContainerRef} className="terminal-container" style={{ height: '500px' }} />;
+  return <div className="terminal-container-wrapper">
+      <div ref={termContainerRef} className="terminal-instance" />
+    </div>;
 }
 
 TerminalView.propTypes = {

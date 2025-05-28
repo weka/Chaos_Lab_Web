@@ -1,46 +1,65 @@
+// client/src/App.jsx
 import { useState } from 'react';
 import { createTheme, ThemeProvider } from '@mui/material/styles';
-import { Header, ScenarioCard, ScenarioContainer } from './components'; // Assuming these are fine
-import TerminalView from './components/TerminalView'; // New import
-import './App.css';
+import { Header, ScenarioCard, ScenarioContainer } from './components';
+import TerminalView from './components/TerminalView';
+import './App.css'; // Your main app styles
+// You can add specific styles for .app-container or .terminal-view-wrapper here if needed
 
 const theme = createTheme({
   // Your theme overrides
-  components: {
-    MuiFormLabel: { styleOverrides: { root: { color: 'var(--weka-purple)', "&.Mui-focused": { color: 'var(--weka-purple)' } } } },
-    MuiFormHelperText: { styleOverrides: { root: { color: 'var(--weka-purple)' } } },
-    MuiTextField: { styleOverrides: { root: { "& .MuiOutlinedInput-root": { backgroundColor: 'var(--primary-bg-color)', color: 'var(--weka-light-gray)', "&.Mui-focused": { "& .MuiOutlinedInput-notchedOutline": { borderColor: "var(--weka-purple)" } }, "& .MuiInputLabel-outlined": { color: 'var(--weka-purple)' } } } } }
-  }
 });
 
 function App() {
-  const [terminalSession, setTerminalSession] = useState(null); // { sessionId, websocketPath, repoName }
+  const [terminalSession, setTerminalSession] = useState(null);
 
   const handleStartScenario = (repoName, sessionId, websocketPath) => {
     setTerminalSession({ repoName, sessionId, websocketPath });
   };
 
-  const handleCloseTerminal = () => {
-    setTerminalSession(null);
-    // Here you might want to send a message to the backend to clean up the session/terraform
+  const handleCloseTerminalAndCleanup = () => {
+    if (terminalSession && terminalSession.sessionId) {
+      console.log(`App.jsx: Closing terminal for session ${terminalSession.sessionId}`);
+    }
+    setTerminalSession(null); // This will unmount TerminalView and trigger its cleanup
   };
 
   return (
     <ThemeProvider theme={theme}>
-      <div>
+      {/* .app-container can be styled in App.css for overall page layout if desired */}
+      <div className="app-container"> 
         <Header />
 
         {terminalSession ? (
-          <div>
-            <h2>Terminal for {terminalSession.repoName} (Session: {terminalSession.sessionId})</h2>
+          // .terminal-view-wrapper is styled by TerminalView.css for centering the terminal block
+          <div className="terminal-view-wrapper"> 
+            <h2 style={{ color: '#ebdbb2', fontFamily: 'var(--primary-font)' }}>
+              Terminal for {terminalSession.repoName} (Session: {terminalSession.sessionId})
+            </h2>
             <TerminalView
               sessionId={terminalSession.sessionId}
               websocketPath={terminalSession.websocketPath}
+              onCloseTerminal={handleCloseTerminalAndCleanup} 
             />
-            <button onClick={handleCloseTerminal} style={{ marginTop: '1rem' }}>Close Terminal</button>
+            <button 
+              onClick={handleCloseTerminalAndCleanup} 
+              style={{ 
+                marginTop: '1.5rem', 
+                padding: '0.75em 1.5em', 
+                backgroundColor: '#458588', // Gruvbox blue
+                color: '#ebdbb2',
+                border: 'none',
+                borderRadius: '4px',
+                cursor: 'pointer',
+                fontSize: '0.9em'
+              }}
+            >
+              Close Terminal & Destroy Scenario
+            </button>
           </div>
         ) : (
           <ScenarioContainer>
+            {/* ScenarioCards as before, passing onStartScenario */}
             <ScenarioCard
               label="Weka Fully Installed"
               repo="weka-fully-installed"
@@ -62,8 +81,8 @@ function App() {
               onStartScenario={handleStartScenario}
             />
             <ScenarioCard
-              label="Setup Weka (Echo Test)" // Renamed for clarity in Phase 1
-              repo="setup-weka" // This will use the echo terminal
+              label="Setup Weka (Terminal Test)"
+              repo="setup-weka"
               onStartScenario={handleStartScenario}
             />
             <ScenarioCard
