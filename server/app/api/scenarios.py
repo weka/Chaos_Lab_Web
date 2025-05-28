@@ -2,16 +2,24 @@ import os
 import time
 import hashlib
 import subprocess
-import zipfile
-import requests
-from flask import Blueprint, jsonify, request, current_app, send_from_directory
+import zipfile # Will be removed for terminal flow, kept for now if you want to revert
+# import requests # Kept for now, but the .tf file content is less critical for terminal echo phase
+from flask import Blueprint, jsonify, request, current_app, send_from_directory # send_from_directory might be removed
 from app.api import bp
+# from app import socketio # Not needed here directly if events are in terminal_events.py
+
+# A simple in-memory store for scenario sessions for this phase
+# In a real app, use Redis or a database
+SCENARIO_SESSIONS = {}
 
 @bp.route('/scenarios', methods=['POST'])
 def create_scenario():
-    """Handle POST requests to create a scenario and make it available for download."""
+    """
+    Handle POST requests to create/prepare a scenario.
+    For Phase 1 of terminal integration, this will still run Terraform
+    but will respond with a session ID for WebSocket connection.
+    """
     try:
-        # Extract and validate request data
         data = request.json
         if not data:
             return jsonify({'error': 'No data provided'}), 400
@@ -20,81 +28,63 @@ def create_scenario():
         if not button_variable:
             return jsonify({'error': 'Missing required parameter: repo'}), 400
 
-        s3_bucket_name = 'cst-chaos-lab'  # Replace with your actual S3 bucket name
-        current_app.logger.info(f"Processing request for repo: {button_variable}")
+        current_app.logger.info(f"Processing scenario request for repo: {button_variable}")
 
+        # --- Terraform part (kept for now, but its output isn't used by terminal yet) ---
         # Fetch Terraform file from GitHub
-        tf_file_url = f'https://raw.githubusercontent.com/NanoBlazer915/CST-Scenario-Lab/main/scenario-tfs/{button_variable}/{button_variable}.tf'
-        tf_file_response = requests.get(tf_file_url)
-        if tf_file_response.status_code != 200:
-            current_app.logger.error(f"Failed to fetch Terraform file: {tf_file_response.status_code}")
-            return jsonify({'error': f"Failed to fetch Terraform file: {tf_file_response.status_code}"}), 404
-        tf_file_content = tf_file_response.text
+        # tf_file_url = f'https://raw.githubusercontent.com/NanoBlazer915/CST-Scenario-Lab/main/scenario-tfs/{button_variable}/{button_variable}.tf'
+        # tf_file_response = requests.get(tf_file_url)
+        # if tf_file_response.status_code != 200:
+        #     current_app.logger.error(f"Failed to fetch Terraform file: {tf_file_response.status_code}")
+        #     return jsonify({'error': f"Failed to fetch Terraform file: {tf_file_response.status_code}"}), 404
+        # tf_file_content = tf_file_response.text
 
         # Create unique directory for processing
         timestamp = str(time.time())
         hash_str = hashlib.sha256(timestamp.encode()).hexdigest()[:8]
-        new_dir_name = f"{button_variable}_{hash_str}"
-        os.makedirs(new_dir_name, exist_ok=True)
-        current_app.logger.debug(f"Created directory: {new_dir_name}")
+        new_dir_name = f"{button_variable}_{hash_str}_scenario_dir" # More descriptive
+        
+        # Ensure base 'scenarios_work_dir' exists
+        base_work_dir = os.path.join(current_app.root_path, '..', 'scenarios_work_dir') # Place it outside /server
+        os.makedirs(base_work_dir, exist_ok=True)
+        scenario_specific_dir = os.path.join(base_work_dir, new_dir_name)
+        os.makedirs(scenario_specific_dir, exist_ok=True)
+        current_app.logger.debug(f"Created directory: {scenario_specific_dir}")
 
-        # Write Terraform file
-        tf_file_path = os.path.join(new_dir_name, 'main.tf')
-        with open(tf_file_path, 'w') as file:
-            file.write(tf_file_content)
-        current_app.logger.debug(f"Terraform file written to: {tf_file_path}")
+        # Write Terraform file (Example - in real scenario, fetch it)
+        tf_file_path = os.path.join(scenario_specific_dir, 'main.tf')
+        # For Phase 1, we can even use a dummy Terraform file if real provisioning is slow/costly for testing UI
+        dummy_tf_content = """
+        # resource "null_resource" "example" {} 
+        # output "message" { value = "Terraform apply for ${var.scenario_name} complete." }
+        # variable "scenario_name" { default = "dummy_scenario" }
+        """
+        # with open(tf_file_path, 'w') as file:
+        #     file.write(tf_file_content) # Or dummy_tf_content for testing
+        # current_app.logger.debug(f"Terraform file written to: {tf_file_path}")
 
-        # Run Terraform commands
-        subprocess.run(['terraform', 'init'], check=True, cwd=new_dir_name)
-        subprocess.run(['terraform', 'apply', '--auto-approve'], check=True, cwd=new_dir_name)
-        current_app.logger.info("Terraform operations completed successfully.")
+        # Run Terraform commands (Placeholder - you'd re-enable this)
+        # current_app.logger.info(f"Running Terraform in {scenario_specific_dir}")
+        # subprocess.run(['terraform', 'init'], check=True, cwd=scenario_specific_dir)
+        # subprocess.run(['terraform', 'apply', '--auto-approve', '-var', f'scenario_name={button_variable}'], check=True, cwd=scenario_specific_dir)
+        current_app.logger.info(f"Terraform operations placeholder for {button_variable} completed.")
+        # --- End Terraform part ---
 
-        # Zip directory contents
-        zip_filename = f"{new_dir_name}.zip"
-        with zipfile.ZipFile(zip_filename, 'w', zipfile.ZIP_DEFLATED) as zipf:
-            for root, dirs, files in os.walk(new_dir_name):
-                for file in files:
-                    file_path = os.path.join(root, file)
-                    arcname = os.path.relpath(file_path, new_dir_name)
-                    zipf.write(file_path, arcname)
-        current_app.logger.info(f"Zipped directory to: {zip_filename}")
+        # Generate a unique session ID for the terminal
+        session_id = f"{button_variable}-{hash_str}"
+        SCENARIO_SESSIONS[session_id] = {
+            "repo": button_variable,
+            "status": "ready",
+            "terraform_dir": scenario_specific_dir
+            # In a real app, you'd store IP, credentials, or PTY process here
+        }
+        current_app.logger.info(f"Scenario '{button_variable}' ready. Session ID: {session_id}")
 
-        # Move ZIP file to a directory accessible by Flask
-        downloads_dir = os.path.join(current_app.root_path, 'downloads')
-        os.makedirs(downloads_dir, exist_ok=True)
-        zip_file_path = os.path.join(downloads_dir, zip_filename)
-        os.rename(zip_filename, zip_file_path)
-        current_app.logger.info(f"Moved ZIP file to downloads directory: {zip_file_path}")
-
-        # **Start the S3 upload script as a separate process**
-        s3_key = f"scenarios/{zip_filename}"
-        upload_script_path = os.path.join(current_app.root_path, '/server/app/api/upload_to_s3.py')
-
-        # Ensure the upload script is executable
-        if not os.access(upload_script_path, os.X_OK):
-            os.chmod(upload_script_path, 0o755)
-
-        # Build the command to run the upload script
-        command = [
-            'python',  # Or use 'python3' depending on your environment
-            upload_script_path,
-            zip_file_path,
-            s3_bucket_name,
-            s3_key
-        ]
-
-        # Start the upload script as a separate process
-        subprocess.Popen(command)
-        current_app.logger.info(f"Started upload script: {' '.join(command)}")
-
-        # Return a URL to download the ZIP file
-        download_url = f"/api/downloads/{zip_filename}"
-
-        # Return the response to the client immediately
         return jsonify({
-            'message': 'Scenario created!',
-            'download_url': download_url
-        })
+            'message': f'Scenario {button_variable} initialized.',
+            'sessionId': session_id,
+            'websocketPath': '/terminal_ws' # This will be the Socket.IO namespace
+        }), 200
 
     except subprocess.CalledProcessError as e:
         error_msg = f"Terraform command failed: {e.cmd}\nOutput: {e.output.decode('utf-8') if e.output else 'No output'}"
@@ -102,11 +92,13 @@ def create_scenario():
         return jsonify({'error': error_msg}), 500
     except Exception as e:
         error_msg = f"An unexpected error occurred: {str(e)}"
-        current_app.logger.error(error_msg)
+        current_app.logger.error(error_msg, exc_info=True) # Log full traceback
         return jsonify({'error': error_msg}), 500
 
-# Route to serve the ZIP files
-@bp.route('/downloads/<path:filename>', methods=['GET'])
-def download_file(filename):
-    downloads_dir = os.path.join(current_app.root_path, 'downloads')
-    return send_from_directory(directory=downloads_dir, path=filename, as_attachment=True)
+# The download endpoint is likely no longer needed for the terminal flow
+# You can comment it out or remove it if the zip file is fully replaced.
+# @bp.route('/downloads/<path:filename>', methods=['GET'])
+# def download_file(filename):
+#     downloads_dir = os.path.join(current_app.root_path, 'downloads') # Original path
+#     # Ensure this path is correct or update if downloads are now elsewhere
+#     return send_from_directory(directory=downloads_dir, path=filename, as_attachment=True)

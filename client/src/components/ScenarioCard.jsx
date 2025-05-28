@@ -1,230 +1,79 @@
-import * as React from 'react'
-import PropTypes from 'prop-types'
-// import CustomTextField from './CustomTextField';
-import { FontAwesomeIcon } from '@fortawesome/react-fontawesome'
+// client/src/components/ScenarioCard.jsx
+import { useState, useCallback } from 'react';
+import PropTypes from 'prop-types';
+import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
+import './ScenarioCard.module.css'; // Using this based on your file list - adjust if wrong
 
-import TextField from '@mui/material/TextField'
+// Ensure VITE_APP_BASE_URL is available, defaulting if not
+const API_BASE_URL = import.meta.env.VITE_APP_BASE_URL || 'http://localhost:5000';
 
-import { addClasses } from '../utils'
+function ScenarioCard({ label, repo, onStartScenario }) {
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-import { useScenarioContext } from './context'
-
-import Conditionally from './Conditionally'
-import BackButton from './BackButton'
-
-import styles from './ScenarioCard.module.css'
-
-/**
- * @name ScenarioCard
- * @component
- *
- * @param {object} props
- * @param {string} props.label
- * @param {string} props.repo
- *
- * @returns {React.ReactNode}
- */
-
-function ScenarioCard(props) {
-  const {
-    label,
-    repo,
-  } = props
-
-  const [formValues, setFormValues] = React.useState({})
-
-  const handleChange = React.useCallback(
-    (event) => {
-      const { name, value } = event.target
-
-      setFormValues((values) => {
-        return {
-          ...values,
-          [name]: value,
-        }
-      })
-    },
-    []
-  )
-
-  const {
-    isSelected,
-    handleSelect,
-  } = useScenarioContext()
-
-  const [isFetching, setIsFetching] = React.useState(false)
-  const [downloadUrl, setDownloadUrl] = React.useState('')
-
-  const handleSubmit = React.useCallback(
-    (event) => {
-      event.preventDefault()
-
-      setIsFetching(true)
-
-      const url = `${import.meta.env.VITE_APP_BASE_URL}/api/scenarios`
-
-      const config = {
+  const handleStartClick = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    console.log(`Starting scenario: ${repo}`); // For debugging
+    try {
+      const response = await fetch(`${API_BASE_URL}/api/scenarios`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          repo,
-          // form values
-          backend_count: Number(formValues.backend_count),
-          client_count: Number(formValues.client_count),
-          expiration_hours: Number(formValues.expiration_hours),
-          weka_version: formValues.weka_version,
-        }),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ repo }),
+      });
+
+      console.log(`Response status from /api/scenarios: ${response.status}`); // For debugging
+
+      if (!response.ok) {
+        let errorData;
+        try {
+          errorData = await response.json();
+        } catch (e) {
+          // If response is not JSON, use the status text
+          throw new Error(`HTTP error! Status: ${response.status} - ${response.statusText}`);
+        }
+        throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
       }
 
-      fetch(url, config).then(
-          (response) => { return response.json() }
-        ).then(
-          (data) => {
-            if (data.download_url) {
-              const downloadUrl = `${import.meta.env.VITE_APP_BASE_URL}${data.download_url}`
+      const data = await response.json();
+      console.log('Scenario initialized by backend:', data); // For debugging
 
-              setDownloadUrl(downloadUrl)
-            }
-          }
-        ).catch(
-          (error) => {
-            if (import.meta.env.NODE_ENV === 'development') {
-              console.error(error)
-            }
-          }
-        ).finally(
-          () => {
-          setIsFetching(false)
-        }
-      )
-    },
-    [
-      repo,
-      formValues,
-    ]
-  )
-
-  const isSelection = isSelected(repo)
-
-  const containerClassNames = addClasses({
-    [styles.card]: true,
-    [styles.card_hidden]: isSelection === false,
-    [styles.card_selected]: isSelection === true,
-  })
+      if (data.sessionId && data.websocketPath) {
+        onStartScenario(repo, data.sessionId, data.websocketPath);
+      } else {
+        console.error("Server response missing session ID or WebSocket path.", data);
+        throw new Error("Server response missing session ID or WebSocket path.");
+      }
+    } catch (err) {
+      console.error("Failed to start scenario:", err);
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  }, [repo, onStartScenario]);
 
   return (
-    <div className={containerClassNames}>
+    <div className="weka-scenario-card"> {/* Ensure this class matches your CSS */}
       <h3>{label}</h3>
-
-      <Conditionally when={isSelection}>
-        <BackButton />
-      </Conditionally>
-
-      <Conditionally when={isSelection}>
-        <TextField
-          autoFocus={true}
-          fullWidth={true}
-          label="Weka Version"
-          margin="normal"
-          name="weka_version"
-          onChange={handleChange}
-          placeholder="4.2.15"
-          size="small"
-          value={formValues.weka_version}
-        />
-
-        <TextField
-          fullWidth={true}
-          helperText="(+1) for the Scenario Installer"
-          label="Backend Count"
-          margin="normal"
-          name="backend_count"
-          onChange={handleChange}
-          placeholder="5"
-          size="small"
-          value={formValues.backend_count}
-        />
-
-        <TextField
-          fullWidth={true}
-          label="Client Count"
-          margin="normal"
-          name="client_count"
-          onChange={handleChange}
-          placeholder="1"
-          size="small"
-          value={formValues.client_count}
-        />
-
-        <TextField
-          fullWidth={true}
-          label="Expiration Time (Hours)"
-          margin="normal"
-          name="expiration_hours"
-          onChange={handleChange}
-          placeholder="4"
-          size="small"
-          value={formValues.expiration_hours}
-        />
-      </Conditionally>
-
-      <span className={styles.form_button}>
-        <Conditionally
-          when={!isFetching}
-          otherwise={(
-            <div className={styles.card_loading}>
-              <FontAwesomeIcon icon="fa-solid fa-circle-notch" spin />
-            </div>
-          )}
-        >
-          <Conditionally
-            when={!downloadUrl}
-            otherwise={(
-              <a
-                className="weka-scenario-card-link"
-                href={downloadUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Download
-              </a>
-            )}
-          >
-            <Conditionally
-              when={!isSelection}
-              otherwise={(
-                <button
-                  onClick={handleSubmit}
-                  className={styles.card_button}
-                  type="submit"
-                >
-                  Start
-                </button>
-              )}
-            >
-              <button
-                className={styles.card_button}
-                onClick={handleSelect}
-                data-repo={repo}
-                type="button"
-              >
-                Select Scenario
-              </button>
-            </Conditionally>
-          </Conditionally>
-        </Conditionally>
-      </span>
+      {loading ? (
+        <div className="weka-scenario-card-loading"> {/* Ensure this class matches your CSS */}
+          <FontAwesomeIcon icon="fa-solid fa-circle-notch" spin size="2x" />
+          <p>Preparing scenario...</p>
+        </div>
+      ) : (
+        <button className="weka-scenario-card-button" onClick={handleStartClick}> {/* Ensure this class matches your CSS */}
+          Start Scenario
+        </button>
+      )}
+      {error && <p style={{ color: 'red', marginTop: '0.5em' }}>Error: {error}</p>}
     </div>
-  )
+  );
 }
 
 ScenarioCard.propTypes = {
   label: PropTypes.string.isRequired,
   repo: PropTypes.string.isRequired,
-}
+  onStartScenario: PropTypes.func.isRequired,
+};
 
-export {
-  ScenarioCard as default,
-}
+export default ScenarioCard;

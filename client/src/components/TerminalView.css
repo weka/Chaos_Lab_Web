@@ -1,0 +1,12 @@
+.terminal-container {
+  height: 400px; /* Or your desired height */
+  width: 100%;
+  border: 1px solid #ccc;
+  background-color: #000; /* Typical terminal background */
+  padding: 5px;
+  box-sizing: border-box;
+}
+
+.terminal-container .xterm {
+  height: 100% !important; /* Ensure xterm fills the container */
+}
