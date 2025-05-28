@@ -66,8 +66,8 @@ function App() {
               onStartScenario={handleStartScenario}
             />
             <ScenarioCard
-              label="Weka Agent Failure"
-              repo="weka-agent-failure"
+              label="Secret Agent Man"
+              repo="secret-agent-man"
               onStartScenario={handleStartScenario}
             />
             <ScenarioCard
@@ -76,18 +76,18 @@ function App() {
               onStartScenario={handleStartScenario}
             />
             <ScenarioCard
-              label="Drive 0 Error"
-              repo="drives0-error"
+              label="Drives'ing me crazy"
+              repo="drives-ing-me-crazy"
               onStartScenario={handleStartScenario}
             />
             <ScenarioCard
-              label="Setup Weka (Terminal Test)"
+              label="Setup Weka"
               repo="setup-weka"
               onStartScenario={handleStartScenario}
             />
             <ScenarioCard
-              label="Client Scenarios"
-              repo="client-scenarios"
+              label="Client Chaos Showcase"
+              repo="client-chaos-showcase"
               onStartScenario={handleStartScenario}
             />
           </ScenarioContainer>
