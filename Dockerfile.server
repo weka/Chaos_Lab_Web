@@ -1,7 +1,7 @@
 # Use the Terraform image as the base
 FROM hashicorp/terraform:1.5.5
 
-# Install Python, Git, SSH client (includes ssh-agent), and other necessary tools
+# Install Python, Git, SSH client, AWS CLI, and other necessary tools
 RUN apk add --no-cache \
     python3 \
     python3-dev \
@@ -12,31 +12,22 @@ RUN apk add --no-cache \
     zip \
     bash \
     git \
-    openssh-client
+    openssh-client \
+    aws-cli # Added AWS CLI
 
 # Upgrade pip
 RUN pip install --no-cache-dir --upgrade pip
 
-# Create .ssh directory and set up SSH config for GitHub
+# Create .ssh directory and set up basic SSH config for GitHub
 RUN mkdir -p /root/.ssh && \
-    chmod 700 /root/.ssh
-
-# Create SSH config file with proper newlines
-# Using printf is more reliable for multiline strings in shell
-RUN printf "Host github.com\n\
+    chmod 700 /root/.ssh && \
+    printf "Host github.com\n\
   HostName github.com\n\
   User git\n\
   IdentityFile /root/.ssh/id_git_rsa\n\
   StrictHostKeyChecking no\n\
   UserKnownHostsFile /dev/null\n" > /root/.ssh/config && \
     chmod 600 /root/.ssh/config
-
-# Alternative: Pre-populate known_hosts for github.com
-# This is more secure than StrictHostKeyChecking no, but requires network access during build.
-# RUN ssh-keyscan github.com >> /root/.ssh/known_hosts && \
-#     chmod 644 /root/.ssh/known_hosts
-# If using ssh-keyscan, you could change StrictHostKeyChecking to 'yes' or remove it,
-# and remove UserKnownHostsFile /dev/null in the config above.
 
 # Set working directory for the application
 WORKDIR /server
@@ -48,11 +39,20 @@ COPY ./server /server
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Copy the scenario manifest
+COPY scenario_manifest.json /server/scenario_manifest.json
+
+
 # Install application Python dependencies
 RUN pip install --no-cache-dir -r /server/requirements.txt
 
-ENV FLASK_ENV=development
+ENV FLASK_ENV=development # For ECS, this might be overridden by Task Definition
 
+# Expose the application port
 EXPOSE 5000
+
+# Use the new entrypoint script
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+
+# Default command to run the Flask application (will be passed to entrypoint.sh)
 CMD ["python", "main.py"]
