@@ -3,14 +3,20 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.server
-    image: ecs-chaos-lab-creator-server:latest
+    image: ecs-chaos-lab-creator-server:latest # Optional: name your image
     ports:
-      - "5000:5000"
+      - "5000:5000" # Map host port 5000 to container port 5000 (Flask)
     volumes:
-            - ~/.aws:/root/.aws:ro 
+      # Mount your local AWS credentials for Terraform and Boto3 to use
+      - ~/.aws:/root/.aws:ro
+
+      - ~/.ssh/id_ed25519chaosweb:/root/.ssh/id_git_rsa:ro # Mount as id_git_rsa, read-only
+
     environment:
+      # Flask specific environment variables
       - FLASK_APP=server/main.py
-      - FLASK_ENV=production
+      - FLASK_ENV=development # Overrides Dockerfile's ENV for runtime if different; consistent here.
+
     depends_on:
       - client
 
@@ -19,8 +25,8 @@ services:
       context: .
       dockerfile: Dockerfile.client
       args:
+        # This URL is used by the Vite build process to bake in the backend API URL
         VITE_APP_BASE_URL: "http://localhost:5000"
-    image: ecs-chaos-lab-creator-client:latest
+    image: ecs-chaos-lab-creator-client:latest # Optional: name your image
     ports:
-      - "80:80"
-
+      - "80:80" # Map host port 80 to container port 80 (Nginx)

@@ -1,190 +1,308 @@
-from flask import request, current_app
-from flask_socketio import emit, join_room, leave_room
-from app import socketio # Import the socketio instance from app/__init__.py
-from .scenarios import SCENARIO_SESSIONS # Import the session store
-import subprocess
 import os
-import pty # For PTY management (basic example)
-import select # For reading from PTY
+import select
+import time
+import paramiko
+import io
+import subprocess
+import shutil
+from flask import request, current_app, Flask
+from flask_socketio import emit, join_room, leave_room, disconnect, Namespace
+from app import socketio 
+from .scenarios import SCENARIO_SESSIONS
+import boto3
 
-# Store PTY processes and file descriptors associated with session IDs
-# WARNING: This is a simplified in-memory store and not robust for production.
-# It also doesn't handle multiple simultaneous terminals per session well.
 PTY_PROCESSES = {}
 
+def ssh_output_reader(app_for_context, scenario_id, channel):
+    with app_for_context.app_context():
+        current_app.logger.info(f"[SSH Reader {scenario_id}]: Starting PTY output reader for channel {channel}.")
+        try:
+            while channel and channel.active:
+                socketio.sleep(0.01) 
+                read_ready, _, _ = select.select([channel], [], [], 0.05) 
+                if read_ready:
+                    if channel.recv_ready():
+                        output = channel.recv(4096).decode(errors='replace')
+                        if output:
+                            socketio.emit('pty-output', {'output': output}, room=scenario_id, namespace='/terminal_ws')
+                        else:
+                            current_app.logger.info(f"[SSH Reader {scenario_id}]: Channel recv_ready but got empty output, may be closing.")
+                            if channel.exit_status_ready(): break
+                    if channel.recv_stderr_ready():
+                        stderr_output = channel.recv_stderr(4096).decode(errors='replace')
+                        if stderr_output:
+                            socketio.emit('pty-output', {'output': stderr_output}, room=scenario_id, namespace='/terminal_ws')
+                if channel.exit_status_ready():
+                    current_app.logger.info(f"[SSH Reader {scenario_id}]: Channel exit status ready. Exiting reader.")
+                    break
+        except paramiko.SSHException as e:
+            current_app.logger.error(f"[SSH Reader {scenario_id}]: SSHException in reader: {e}", exc_info=False)
+            socketio.emit('pty-output', {'output': f"\r\n[SSH Connection Error in reader: {e}]\r\n"}, room=scenario_id, namespace='/terminal_ws')
+        except Exception as e:
+            current_app.logger.error(f"[SSH Reader {scenario_id}]: Unhandled exception in reader: {e}", exc_info=True)
+            socketio.emit('pty-output', {'output': f"\r\n[Error reading from remote: {e}]\r\n"}, room=scenario_id, namespace='/terminal_ws')
+        finally:
+            current_app.logger.info(f"[SSH Reader {scenario_id}]: PTY output reader stopped for channel {channel}.")
+            if scenario_id in PTY_PROCESSES and PTY_PROCESSES[scenario_id].get("ssh_channel") == channel :
+                 socketio.emit('pty-output', {'output': '\r\n[Terminal session may have ended or encountered an issue.]\r\n$ '}, room=scenario_id, namespace='/terminal_ws')
+            if scenario_id in PTY_PROCESSES and PTY_PROCESSES[scenario_id].get("ssh_channel") == channel:
+                PTY_PROCESSES[scenario_id]["ssh_channel"] = None
 
-@socketio.on('connect', namespace='/terminal_ws')
-def handle_terminal_connect():
-    session_id = request.sid # Socket.IO provides a unique session ID for each connection
-    # We need a way for the client to tell us WHICH scenario session this terminal is for.
-    # For now, we'll just log it. The client will need to send a 'join' event with its scenario_session_id
-    current_app.logger.info(f"Terminal client connected: SID {session_id}")
-    emit('pty-output', {"output": f"Welcome! WebSocket Connection SID: {session_id}\r\nSend a 'join_scenario' event with your scenario's sessionId.\r\n"})
 
+def cleanup_scenario_session(app_for_context, scenario_id):
+    with app_for_context.app_context():
+        current_app.logger.info(f"Starting cleanup for scenario session: {scenario_id}")
+        session_pty_data = PTY_PROCESSES.pop(scenario_id, None)
+        scenario_meta_data = SCENARIO_SESSIONS.pop(scenario_id, None)
 
-@socketio.on('join_scenario', namespace='/terminal_ws')
-def handle_join_scenario(data):
-    client_sid = request.sid
-    scenario_session_id = data.get('sessionId')
-
-    if not scenario_session_id or scenario_session_id not in SCENARIO_SESSIONS:
-        current_app.logger.error(f"Client {client_sid} tried to join invalid scenario session: {scenario_session_id}")
-        emit('pty-output', {"output": f"Error: Invalid or unknown scenario session ID: {scenario_session_id}\r\n"})
-        return
-
-    join_room(scenario_session_id) # Socket.IO room for this scenario
-    current_app.logger.info(f"Client SID {client_sid} joined scenario room: {scenario_session_id}")
-    
-    # --- Phase 2/3: PTY/SSH/Docker exec would happen here ---
-    # For Phase 1, we just confirm and provide a prompt.
-    # In a real scenario, you'd start the PTY process now if not already started for this session.
-    # For this simplified echo example, we don't need to manage a separate PTY process per client yet.
-    
-    # Store client SID against the scenario_session_id if needed for direct messaging
-    if scenario_session_id not in PTY_PROCESSES:
-         PTY_PROCESSES[scenario_session_id] = {"clients": set(), "pty_master_fd": None, "pty_child_pid": None}
-    PTY_PROCESSES[scenario_session_id]["clients"].add(client_sid)
-
-
-    emit('pty-output', {"output": f"Joined scenario '{SCENARIO_SESSIONS[scenario_session_id]['repo']}'.\r\nPhase 1: Echo mode active.\r\n$ "})
-    # Example: Starting a simple bash shell in a PTY (VERY basic, needs error handling & robust management)
-    # if PTY_PROCESSES[scenario_session_id].get("pty_master_fd") is None:
-    #     try:
-    #         master_fd, slave_fd = pty.openpty()
-    #         # To make it non-blocking for select
-    #         os.set_blocking(master_fd, False)
+        if session_pty_data:
+            channel = session_pty_data.get("ssh_channel")
+            if channel:
+                try: 
+                    current_app.logger.info(f"Closing SSH channel for {scenario_id}")
+                    channel.close()
+                except Exception as e: current_app.logger.error(f"Error closing SSH channel for {scenario_id}: {e}")
             
-    #         child_pid = os.fork()
-    #         if child_pid == 0: # Child process
-    #             os.setsid()
-    #             os.dup2(slave_fd, 0) # stdin
-    #             os.dup2(slave_fd, 1) # stdout
-    #             os.dup2(slave_fd, 2) # stderr
-    #             os.close(master_fd)
-    #             os.close(slave_fd)
-    #             # In a real case, you might 'cd' into scenario_specific_dir
-    #             # and then execute something specific to that scenario.
-    #             # For now, just a bash shell.
-    #             # IMPORTANT: This bash shell is running AS THE FLASK SERVER USER.
-    #             #            This is a huge security risk if not managed carefully.
-    #             os.execv('/bin/bash', ['/bin/bash']) 
-    #         else: # Parent process
-    #             os.close(slave_fd)
-    #             PTY_PROCESSES[scenario_session_id]["pty_master_fd"] = master_fd
-    #             PTY_PROCESSES[scenario_session_id]["pty_child_pid"] = child_pid
-    #             current_app.logger.info(f"PTY master_fd {master_fd} and child_pid {child_pid} created for {scenario_session_id}")
-    #             # Start a background thread/task to read from this PTY master_fd
-    #             socketio.start_background_task(target=read_from_pty, scenario_id=scenario_session_id, master_fd=master_fd)
+            ssh_client = session_pty_data.get("ssh_client")
+            if ssh_client:
+                try: 
+                    current_app.logger.info(f"Closing SSH client for {scenario_id}")
+                    ssh_client.close()
+                except Exception as e: current_app.logger.error(f"Error closing SSH client for {scenario_id}: {e}")
+            
+            reader_greenlet = session_pty_data.get("reader_greenlet")
+            if reader_greenlet and hasattr(reader_greenlet, 'kill'):
+                 try:
+                     current_app.logger.info(f"Attempting to kill reader greenlet for {scenario_id}")
+                     reader_greenlet.kill()
+                 except Exception as e:
+                     current_app.logger.error(f"Error killing reader greenlet for {scenario_id}: {e}")
 
-    #     except Exception as e:
-    #         current_app.logger.error(f"Failed to create PTY for {scenario_session_id}: {e}")
-    #         emit('pty-output', {"output": f"\r\nError starting terminal: {e}\r\n"})
+        if scenario_meta_data:
+            tf_dir = scenario_meta_data.get("terraform_dir")
+            terraform_name_prefix_var = scenario_meta_data.get("terraform_name_prefix_for_run", scenario_id) 
 
+            if tf_dir and os.path.exists(tf_dir):
+                current_app.logger.info(f"Running terraform destroy for {scenario_id} (using name_prefix: {terraform_name_prefix_var}) in {tf_dir}")
+                try:
+                    destroy_cmd = ['terraform', 'destroy', '--auto-approve', '-no-color']
+                    destroy_result = subprocess.run(destroy_cmd, cwd=tf_dir, capture_output=True, text=True, timeout=600)
+                    if destroy_result.returncode == 0:
+                        current_app.logger.info(f"Terraform destroy successful for {scenario_id}:\n{destroy_result.stdout}")
+                    else:
+                        current_app.logger.error(f"Terraform destroy FAILED for {scenario_id}. Stderr:\n{destroy_result.stderr}\nStdout:\n{destroy_result.stdout}")
+                    
+                    aws_key_name = scenario_meta_data.get("key_name_aws")
+                    if aws_key_name:
+                        current_app.logger.info(f"Attempting to delete AWS key pair: {aws_key_name}")
+                        try:
+                            ec2_client = boto3.client('ec2')
+                            ec2_client.delete_key_pair(KeyName=aws_key_name)
+                            current_app.logger.info(f"Successfully deleted AWS key pair: {aws_key_name}")
+                        except Exception as key_del_e:
+                            current_app.logger.error(f"Failed to delete AWS key pair {aws_key_name}: {key_del_e}")
 
-# def read_from_pty(scenario_id, master_fd):
-#     """Background task to read from PTY and emit to clients in the room."""
-#     current_app.logger.info(f"Background PTY reader started for {scenario_id} on fd {master_fd}")
-#     try:
-#         while True:
-#             socketio.sleep(0.01) # Yield for other greenlets
-#             r, _, _ = select.select([master_fd], [], [], 0) # Non-blocking read
-#             if r:
-#                 try:
-#                     output = os.read(master_fd, 1024)
-#                     if output:
-#                         socketio.emit('pty-output', {'output': output.decode(errors='replace')}, room=scenario_id, namespace='/terminal_ws')
-#                     else: # PTY closed (child exited)
-#                         current_app.logger.info(f"PTY for {scenario_id} closed (EOF).")
-#                         break 
-#                 except OSError as e:
-#                     current_app.logger.error(f"OSError reading from PTY for {scenario_id}: {e}")
-#                     break # Exit loop on error
-#     except Exception as e:
-#         current_app.logger.error(f"Exception in PTY reader for {scenario_id}: {e}")
-#     finally:
-#         current_app.logger.info(f"PTY reader for {scenario_id} stopping.")
-#         if master_fd:
-#             os.close(master_fd)
-#         if PTY_PROCESSES.get(scenario_id):
-#             PTY_PROCESSES[scenario_id]["pty_master_fd"] = None
-#             # Consider more cleanup, like ensuring child_pid is terminated
+                    current_app.logger.info(f"Attempting to remove directory: {tf_dir}")
+                    shutil.rmtree(tf_dir, ignore_errors=True)
+                    current_app.logger.info(f"Cleaned up directory {tf_dir}")
 
-@socketio.on('pty-input', namespace='/terminal_ws')
-def handle_terminal_input(data):
-    client_sid = request.sid
-    scenario_session_id = None
-    # Find which scenario session this client SID belongs to
-    for s_id, session_data in PTY_PROCESSES.items():
-        if client_sid in session_data.get("clients", set()):
-            scenario_session_id = s_id
-            break
-    
-    if not scenario_session_id:
-        current_app.logger.warning(f"Pty-input from unknown client SID: {client_sid}")
-        return
-
-    input_data = data.get('input', '')
-    current_app.logger.debug(f"Input from SID {client_sid} for scenario {scenario_session_id}: {input_data!r}")
-
-    # --- Phase 1: Echo back ---
-    emit('pty-output', {"output": f"{input_data}$ "}, room=scenario_session_id) # Echo back to the room
-
-    # --- Phase 2/3: Write to PTY ---
-    # master_fd = PTY_PROCESSES[scenario_session_id].get("pty_master_fd")
-    # if master_fd:
-    #     try:
-    #         os.write(master_fd, input_data.encode())
-    #     except OSError as e:
-    #         current_app.logger.error(f"OSError writing to PTY for {scenario_session_id}: {e}")
-    #         emit('pty-output', {"output": f"\r\nError writing to terminal: {e}\r\n"}, room=scenario_session_id)
-    # else:
-    #     current_app.logger.warning(f"No PTY master_fd for session {scenario_session_id} to write input.")
-    #     emit('pty-output', {"output": f"\r\nTerminal not fully initialized for this session.\r\n$ "}, room=scenario_session_id)
+                except subprocess.TimeoutExpired:
+                    current_app.logger.error(f"Terraform destroy timed out for {scenario_id}")
+                except Exception as e:
+                    current_app.logger.error(f"Error during terraform destroy or directory cleanup for {scenario_id}: {e}", exc_info=True)
+            else:
+                current_app.logger.warning(f"Terraform directory not found for cleanup: {tf_dir}")
+        else:
+            current_app.logger.warning(f"No scenario metadata found for cleanup of {scenario_id}")
+        current_app.logger.info(f"Full cleanup process finished for scenario session {scenario_id}")
 
 
-@socketio.on('disconnect', namespace='/terminal_ws')
-def handle_terminal_disconnect():
-    client_sid = request.sid
-    current_app.logger.info(f"Terminal client disconnected: SID {client_sid}")
-    
-    scenario_to_cleanup = None
-    for s_id, session_data in PTY_PROCESSES.items():
-        if client_sid in session_data.get("clients", set()):
-            session_data["clients"].remove(client_sid)
-            if not session_data["clients"]: # If last client for this scenario session
-                scenario_to_cleanup = s_id
-            break
+class TerminalNamespace(Namespace):
+    def on_connect(self):
+        client_sid = request.sid
+        current_app.logger.info(f"Client SID {client_sid} connected to {self.namespace} namespace.")
+        emit('pty-output', {"output": f"Socket.IO Connected (SID: {client_sid}). Send 'join_scenario' with your scenario's sessionId.\r\n"})
 
-    if scenario_to_cleanup:
-        current_app.logger.info(f"Last client for scenario {scenario_to_cleanup} disconnected. Cleaning up.")
-        # --- Phase 2/3: Terminate PTY and run terraform destroy ---
-        # master_fd = PTY_PROCESSES[scenario_to_cleanup].get("pty_master_fd")
-        # if master_fd:
-        #     try:
-        #         os.close(master_fd)
-        #     except OSError:
-        #         pass # May already be closed
+    def on_join_scenario(self, data):
+        client_sid = request.sid
+        scenario_session_id = data.get('sessionId')
+
+        if not scenario_session_id or scenario_session_id not in SCENARIO_SESSIONS:
+            current_app.logger.error(f"Client {client_sid} attempted to join invalid/unknown scenario session: {scenario_session_id}")
+            emit('pty-output', {"output": f"\r\nError: Invalid or unknown scenario session ID: {scenario_session_id}\r\n"})
+            disconnect() 
+            return
+
+        join_room(scenario_session_id, sid=client_sid)
+        current_app.logger.info(f"Client SID {client_sid} joined scenario room: {scenario_session_id}")
+
+        if scenario_session_id not in PTY_PROCESSES:
+            PTY_PROCESSES[scenario_session_id] = {"clients": set(), "ssh_client": None, "ssh_channel": None, "reader_greenlet": None}
         
-        # child_pid = PTY_PROCESSES[scenario_to_cleanup].get("pty_child_pid")
-        # if child_pid:
-        #     try:
-        #         os.kill(child_pid, 15) # SIGTERM
-        #         os.waitpid(child_pid, 0) # Wait for child to exit
-        #     except ProcessLookupError:
-        #         pass # Process already exited
-        #     except Exception as e:
-        #         current_app.logger.error(f"Error terminating PTY child {child_pid}: {e}")
-
-        # tf_dir = SCENARIO_SESSIONS.get(scenario_to_cleanup, {}).get("terraform_dir")
-        # if tf_dir and os.path.exists(tf_dir):
-        #     try:
-        #         current_app.logger.info(f"Running terraform destroy for {scenario_to_cleanup} in {tf_dir}")
-        #         # subprocess.run(['terraform', 'destroy', '--auto-approve'], check=True, cwd=tf_dir)
-        #         # shutil.rmtree(tf_dir) # Clean up the directory
-        #         current_app.logger.info(f"Terraform destroy (placeholder) and cleanup for {scenario_to_cleanup} done.")
-        #     except Exception as e:
-        #         current_app.logger.error(f"Error during terraform destroy for {scenario_to_cleanup}: {e}")
+        PTY_PROCESSES[scenario_session_id]["clients"].add(client_sid)
         
-        del PTY_PROCESSES[scenario_to_cleanup]
-        if scenario_to_cleanup in SCENARIO_SESSIONS:
-            del SCENARIO_SESSIONS[scenario_to_cleanup]
+        session_pty_data = PTY_PROCESSES[scenario_session_id]
+        if session_pty_data.get("ssh_channel") and session_pty_data["ssh_channel"].active:
+            current_app.logger.info(f"Client {client_sid} rejoining active SSH session for {scenario_session_id}")
+            emit('pty-output', {"output": f"\r\nRejoined active session for '{SCENARIO_SESSIONS[scenario_session_id]['repo']}'.\r\n"})
+            try:
+                session_pty_data["ssh_channel"].send("\n") 
+            except Exception as e:
+                current_app.logger.warning(f"Could not send newline to re-joined channel for {scenario_session_id}: {e}")
+            return
+
+        emit('pty-output', {"output": f"\r\nJoining scenario '{SCENARIO_SESSIONS[scenario_session_id]['repo']}'. Establishing SSH connection...\r\n"})
+        
+        scenario_data = SCENARIO_SESSIONS[scenario_session_id]
+        instance_ip = scenario_data.get("instance_ip")
+        private_key_pem_str = scenario_data.get("private_key_pem_content")
+
+        if not instance_ip or not private_key_pem_str:
+            msg = "\r\nError: Instance IP or private key not found for this session.\r\n"
+            current_app.logger.error(f"Config error for session {scenario_session_id}: Missing IP or PEM content.")
+            emit('pty-output', {"output": msg})
+            disconnect()
+            return
+
+        try:
+            ssh_client = paramiko.SSHClient()
+            ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            
+            private_key_file = io.StringIO(private_key_pem_str)
+            pkey = paramiko.Ed25519Key.from_private_key(private_key_file) if "BEGIN OPENSSH PRIVATE KEY" in private_key_pem_str and "ed25519" in private_key_pem_str.lower() else paramiko.RSAKey.from_private_key(private_key_file)
+            private_key_file.close()
+
+            username = "ec2-user"
+            current_app.logger.info(f"Attempting SSH to {username}@{instance_ip} for session {scenario_session_id} using key type: {type(pkey)}")
+            ssh_client.connect(hostname=instance_ip, username=username, pkey=pkey, timeout=30, look_for_keys=False, allow_agent=False)
+            
+            channel = ssh_client.invoke_shell(term='xterm-256color', width=80, height=24)
+            channel.settimeout(0.0)
+
+            session_pty_data["ssh_client"] = ssh_client
+            session_pty_data["ssh_channel"] = channel
+            
+            app_context_obj = current_app._get_current_object() 
+            reader_greenlet = socketio.start_background_task(
+                target=ssh_output_reader, 
+                app_for_context=app_context_obj,
+                scenario_id=scenario_session_id, 
+                channel=channel
+            )
+            session_pty_data["reader_greenlet"] = reader_greenlet
+            current_app.logger.info(f"SSH connection and PTY established for session {scenario_session_id}.")
+        
+        except Exception as e:
+            current_app.logger.error(f"SSH connection or PTY setup FAILED for {scenario_session_id}: {e}", exc_info=True)
+            emit('pty-output', {"output": f"\r\nSSH Connection Error: {str(e)}\r\n"})
+            if session_pty_data.get("ssh_client"):
+                session_pty_data["ssh_client"].close()
+            session_pty_data["ssh_client"] = None
+            session_pty_data["ssh_channel"] = None
+            return
+
+    # CHANGED METHOD NAME HERE (and corresponding logging)
+    def on_terminalInput(self, data): # Handles 'terminalInput' event
+        client_sid = request.sid
+        scenario_session_id = data.get('sessionId') 
+        input_data = data.get('input', '')
+
+        current_app.logger.error( # Using ERROR level for high visibility
+             f"!!!!!!!!!! [TERMINAL_INPUT_HANDLER - terminalInput EVENT] Triggered by SID {client_sid} " +
+             f"for scenario_session_id '{scenario_session_id}'. Input: {input_data!r} !!!!!!!!!!"
+        )
+        
+        if not scenario_session_id:
+            current_app.logger.error(f"[TERMINAL_INPUT_HANDLER] No sessionId in terminalInput data from {client_sid}")
+            return {"status": "error", "message": "No sessionId provided with input"}
+
+        if scenario_session_id not in PTY_PROCESSES:
+            current_app.logger.warning(f"[TERMINAL_INPUT_HANDLER] terminalInput for unknown/inactive session {scenario_session_id} from {client_sid}")
+            emit('pty-output', {'output': '\r\nError: Session not active or invalid.\r\n'}) 
+            return {"status": "error", "message": "Session not active or invalid"}
+
+        session_info = PTY_PROCESSES[scenario_session_id]
+        channel = session_info.get("ssh_channel")
+
+        if channel and channel.active:
+            current_app.logger.info(f"[TERMINAL_INPUT_HANDLER] Channel for {scenario_session_id} is active.")
+            try:
+                bytes_sent = channel.send(input_data) 
+                current_app.logger.info(f"[TERMINAL_INPUT_HANDLER] Sent {bytes_sent} bytes to PTY for {scenario_session_id}: {input_data!r}")
+                if not input_data and bytes_sent == 0:
+                     pass 
+                elif bytes_sent == 0 and input_data:
+                     current_app.logger.warning(f"[TERMINAL_INPUT_HANDLER] Sent 0 bytes to PTY for non-empty input data for {scenario_session_id}.")
+                return {"status": "ok", "message": f"Input '{input_data[:20]}' processed, {bytes_sent} bytes sent."}
+            except Exception as e:
+                current_app.logger.error(f"[TERMINAL_INPUT_HANDLER] Error writing to SSH PTY for {scenario_session_id}: {e}", exc_info=True)
+                emit('pty-output', {'output': f'\r\nError sending input: {e}\r\n'}, room=scenario_session_id)
+                return {"status": "error", "message": f"Server error sending input: {str(e)}"}
+        else:
+            current_app.logger.warning(f"[TERMINAL_INPUT_HANDLER] No active SSH PTY channel for session {scenario_session_id} to write input. Input: {input_data!r}")
+            emit('pty-output', {'output': '\r\nTerminal session not active or not fully initialized.\r\n'}, room=scenario_session_id)
+            return {"status": "error", "message": "No active channel"}
+         
+        current_app.logger.error(f"[TERMINAL_INPUT_HANDLER] Fell through for {scenario_session_id}. This should not happen.")
+        return {"status": "unhandled_error", "message": "Input processing logic error on server."}
+
+
+    def on_resize(self, data):
+        client_sid = request.sid
+        scenario_session_id = data.get('sessionId')
+        rows = data.get('rows')
+        cols = data.get('cols')
+
+        if not scenario_session_id or scenario_session_id not in PTY_PROCESSES or not isinstance(rows, int) or not isinstance(cols, int): 
+            current_app.logger.warning(f"Invalid resize data for {scenario_session_id} from {client_sid}: rows={rows}, cols={cols}")
+            return
+
+        session_info = PTY_PROCESSES[scenario_session_id]
+        channel = session_info.get("ssh_channel")
+
+        if channel and channel.active:
+            try:
+                channel.resize_pty(width=cols, height=rows)
+                current_app.logger.info(f"Resized PTY for {scenario_session_id} (client {client_sid}) to {cols}x{rows}")
+            except Exception as e:
+                current_app.logger.error(f"Error resizing PTY for {scenario_session_id}: {e}")
+    
+    def on_disconnect_request(self, data):
+        client_sid = request.sid
+        scenario_session_id = data.get('sessionId')
+        current_app.logger.info(f"Client SID {client_sid} sent disconnect_request for scenario {scenario_session_id}")
+        self.on_disconnect(manual_scenario_id_override=scenario_session_id)
+        disconnect(sid=client_sid, namespace=self.namespace)
+
+
+    def on_disconnect(self, manual_scenario_id_override=None):
+        client_sid = request.sid
+        current_app.logger.info(f"Processing disconnect for Client SID {client_sid} in namespace {self.namespace}")
+        
+        scenario_to_cleanup = None
+        target_scenario_id_for_client = manual_scenario_id_override
+        
+        if not target_scenario_id_for_client:
+            for s_id, session_data_val in PTY_PROCESSES.items():
+                if client_sid in session_data_val.get("clients", set()):
+                    target_scenario_id_for_client = s_id
+                    break
+        
+        if target_scenario_id_for_client and target_scenario_id_for_client in PTY_PROCESSES:
+            session_data = PTY_PROCESSES[target_scenario_id_for_client]
+            if client_sid in session_data.get("clients", set()):
+                session_data["clients"].remove(client_sid)
+                current_app.logger.info(f"Client SID {client_sid} removed from scenario {target_scenario_id_for_client} client set. Remaining clients: {len(session_data['clients'])}")
+                if not session_data["clients"]: 
+                    current_app.logger.info(f"Last client for scenario {target_scenario_id_for_client} disconnected. Scheduling full cleanup.")
+                    scenario_to_cleanup = target_scenario_id_for_client
+            else:
+                current_app.logger.warning(f"Client SID {client_sid} was in scenario {target_scenario_id_for_client} but not in its 'clients' set (possibly already removed).")
+        else:
+            current_app.logger.warning(f"Client SID {client_sid} disconnected. Could not determine associated scenario session or PTY_PROCESSES entry not found for '{target_scenario_id_for_client}'.")
+
+        if scenario_to_cleanup:
+            app_context_obj = current_app._get_current_object()
+            socketio.start_background_task(target=cleanup_scenario_session, app_for_context=app_context_obj, scenario_id=scenario_to_cleanup)
+
+socketio.on_namespace(TerminalNamespace('/terminal_ws'))
