@@ -90,6 +90,36 @@ function App() {
               repo="client-chaos-showcase"
               onStartScenario={handleStartScenario}
             />
+            <ScenarioCard
+              label="TA-Tool"
+              repo="TA-Tool"
+              onStartScenario={handleStartScenario}
+            />
+            <ScenarioCard
+              label="Krazy-k8s"
+              repo="krazy-k8s"
+              onStartScenario={handleStartScenario}
+            />
+            <ScenarioCard
+              label="CSI-Basic-Lab"
+              repo="csi-basic-lab"
+              onStartScenario={handleStartScenario}
+            />
+            <ScenarioCard
+              label="It's All About that Trace"
+              repo="its-all-about-that-trace"
+              onStartScenario={handleStartScenario}
+            />
+            <ScenarioCard
+              label="No Bucket Quorum"
+              repo="no-bucket-quorum"
+              onStartScenario={handleStartScenario}
+            />
+            <ScenarioCard
+              label="Kubernetes+Weka"
+              repo="kubernetes+weka"
+              onStartScenario={handleStartScenario}
+            />
           </ScenarioContainer>
         )}
       </div>
