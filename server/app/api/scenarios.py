@@ -14,6 +14,7 @@ SCENARIO_SESSIONS = {}
 # This template is now simpler as we're not defining root outputs here
 # if the modules themselves will provide them via `terraform output -json` OR via local_file
 BASE_TERRAFORM_TEMPLATE = """
+
 provider "aws" {{
   region = "us-east-1"
 }}
@@ -56,8 +57,8 @@ def create_scenario():
     current_app.logger.info(f"Processing scenario request for repo: {button_variable_repo_name}, module path: //{scenario_module_git_path}")
 
     timestamp = str(time.time())
-    hash_str = hashlib.sha256(timestamp.encode()).hexdigest()[:8]
-    terraform_name_prefix_for_run = f'{button_variable_repo_name}-{hash_str}' 
+    hash_str = hashlib.sha256(timestamp.encode()).hexdigest()[:5]
+    terraform_name_prefix_for_run = f'clw-{button_variable_repo_name}-{hash_str}' 
     
     new_dir_name = f"{terraform_name_prefix_for_run}_scenario_dir"
     

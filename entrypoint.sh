@@ -14,7 +14,7 @@ if [ -n "$GIT_SSH_KEY_SECRET_ARN" ]; then
     echo "[Entrypoint] Testing AWS credentials with 'aws sts get-caller-identity'..."
     aws sts get-caller-identity || { echo "[Entrypoint] FATAL: 'aws sts get-caller-identity' failed. Check IAM role and permissions."; exit 1; }
     
-    SECRET_OUTPUT=$(aws secretsmanager get-secret-value --secret-id "$GIT_SSH_KEY_SECRET_ARN" --query SecretString --output text --region ${AWS_DEFAULT_REGION:-us-east-1})
+    SECRET_OUTPUT=$(/usr/bin/aws secretsmanager get-secret-value --secret-id "$GIT_SSH_KEY_SECRET_ARN" --query SecretString --output text --region ${AWS_DEFAULT_REGION:-us-east-1})
     
     if [ -n "$SECRET_OUTPUT" ]; then
         echo "$SECRET_OUTPUT" > /root/.ssh/id_git_rsa

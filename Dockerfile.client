@@ -16,7 +16,7 @@ COPY client/ ./
 
 # Build the application with environment variable
 ARG VITE_APP_BASE_URL
-ENV VITE_APP_BASE_URL=$VITE_APP_BASE_URL
+ENV VITE_APP_BASE_URL="http://ecs-chaos-lab-alb-880543790.us-east-1.elb.amazonaws.com:5000"
 
 # Optional: Verify that the environment variable is set
 RUN echo "VITE_APP_BASE_URL during build: $VITE_APP_BASE_URL"
