@@ -1,0 +1,92 @@
+{
+    "family": "ecs-chaos-lab-app-v3", // Incremented version for clarity
+    "taskRoleArn": "arn:aws:iam::034362041757:role/ecs-chaos-lab-taskrole",
+    "executionRoleArn": "arn:aws:iam::034362041757:role/ecs-chaos-execution-role",
+    "networkMode": "awsvpc",
+    "requiresCompatibilities": ["FARGATE"],
+    "cpu": "1024", 
+    "memory": "2048",
+    "volumes": [], 
+    "containerDefinitions": [
+        {
+            "name": "chaos-server",
+            "image": "034362041757.dkr.ecr.us-east-1.amazonaws.com/ecs-chaos-lab-creator-server:latest", 
+            "essential": true,
+            "cpu": 512, 
+            "memoryReservation": 1024, 
+            "portMappings": [
+                {
+                    "containerPort": 5000,
+                    "protocol": "tcp",
+                    "name": "server-5000-tcp",
+                    "appProtocol": "http" 
+                }
+            ],
+            "environment": [
+                {
+                    "name": "FLASK_APP",
+                    "value": "main.py"
+                },
+                {
+                    "name": "FLASK_ENV",
+                    "value": "production" 
+                },
+                {
+                    "name": "AWS_DEFAULT_REGION",
+                    "value": "us-east-1"
+                },
+                {
+                    "name": "AWS_REGION",
+                    "value": "us-east-1"
+                },
+                {
+                    "name": "GIT_SSH_KEY_SECRET_ARN",
+                    "value": "arn:aws:secretsmanager:us-east-1:034362041757:secret:Priv-key-Chaos-Lab-Git-ZNRXl3" 
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/ecs-chaos-lab-app", // Consider a new log group for v3 if you want separation
+                    "awslogs-region": "us-east-1",
+                    "awslogs-stream-prefix": "server"
+                }
+            }
+        },
+        {
+            "name": "chaos-client",
+            "image": "034362041757.dkr.ecr.us-east-1.amazonaws.com/ecs-chaos-lab-creator-client:latest",
+            "essential": true,
+            "cpu": 256,
+            "memoryReservation": 512,
+            "portMappings": [
+                {
+                    "containerPort": 80,
+                    "protocol": "tcp",
+                    "name": "client-80-tcp",
+                    "appProtocol": "http"
+                }
+            ],
+            "environment": [
+                {
+                    "name": "VITE_APP_BASE_URL", // This is where the client-side JS will make API calls
+                    "value": "http://ecs-chaos-lab-alb-880543790.us-east-1.elb.amazonaws.com" // Your ALB DNS
+                }
+            ],
+            "logConfiguration": {
+                "logDriver": "awslogs",
+                "options": {
+                    "awslogs-group": "/ecs/ecs-chaos-lab-app",
+                    "awslogs-region": "us-east-1",
+                    "awslogs-stream-prefix": "client"
+                }
+            },
+            "dependsOn": [ 
+                {
+                    "containerName": "chaos-server",
+                    "condition": "START"
+                }
+            ]
+        }
+    ]
+}
