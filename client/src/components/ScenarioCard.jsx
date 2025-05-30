@@ -1,4 +1,5 @@
-import { useState, useCallback } from 'react';
+// --- START client/src/components/ScenarioCard.jsx ---
+import React, { useState, useCallback } from 'react';
 import PropTypes from 'prop-types';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import './ScenarioCard.module.css'; // Or your relevant CSS import
@@ -7,15 +8,10 @@ const API_BASE_URL = import.meta.env.VITE_APP_BASE_URL || 'http://localhost:5000
 
 const DEFAULT_GUIDE_URL = "https://www.notion.so/wekaio/CEL-All-Info-Page-12930b0d101c80f8bdc0e188ea994709";
 
-// Define your Notion page URLs (or other external URLs) here
-// Only include entries for scenarios that have a SPECIFIC guide.
-// If a scenario is not listed here, it will use DEFAULT_GUIDE_URL.
 const SCENARIO_SPECIFIC_GUIDE_URLS = {
   "setup-weka": "https://www.notion.so/wekaio/Setup-Weka-a3fce840985a4bb9b24ba521924c671c",
-  "weka-fully-installed": "https://www.notion.so/wekaio/Weka-Fully-Installed-588a732407e1490999d7a293967f734f", // Replace
-  "TA-Tool": "https://www.notion.so/wekaio/TA-Tool-Testing-1fa30b0d101c80d88063e6518b63d173"// Replace
-  // Add other scenarios with specific guides here.
-  // Do NOT add a "default-guide" key here if you want the global DEFAULT_GUIDE_URL to be the true fallback.
+  "weka-fully-installed": "https://www.notion.so/wekaio/Weka-Fully-Installed-588a732407e1490999d7a293967f734f",
+  "TA-Tool": "https://www.notion.so/wekaio/TA-Tool-Testing-1fa30b0d101c80d88063e6518b63d173"
 };
 
 function ScenarioCard({ label, repo, onStartScenario }) {
@@ -27,13 +23,9 @@ function ScenarioCard({ label, repo, onStartScenario }) {
     setError(null);
     console.log(`Starting scenario: ${repo}`);
 
-    // --- OPEN GUIDE PAGE (Notion or other external URL) ---
-    // Use the specific guide if available, otherwise use the DEFAULT_GUIDE_URL
     const guideUrl = SCENARIO_SPECIFIC_GUIDE_URLS[repo] || DEFAULT_GUIDE_URL;
-    
     window.open(guideUrl, '_blank', 'noopener,noreferrer');
     console.log(`Opened guide: ${guideUrl}`);
-    // --- END OPEN GUIDE PAGE ---
 
     try {
       const response = await fetch(`${API_BASE_URL}/api/scenarios`, {
@@ -43,29 +35,26 @@ function ScenarioCard({ label, repo, onStartScenario }) {
       });
 
       console.log(`Response status from /api/scenarios: ${response.status}`);
+      const responseData = await response.json();
 
       if (!response.ok) {
-        let errorData;
-        try {
-          errorData = await response.json();
-        } catch (e) {
-          throw new Error(`HTTP error! Status: ${response.status} - ${response.statusText}`);
-        }
-        throw new Error(errorData.error || `HTTP error! Status: ${response.status}`);
+        const errorMessage = responseData.error || responseData.message || `HTTP error! Status: ${response.status}`;
+        console.error("Failed to start scenario (response not ok):", errorMessage, responseData);
+        throw new Error(errorMessage);
       }
 
-      const data = await response.json();
-      console.log('Scenario initialized by backend:', data);
-
-      if (data.sessionId && data.websocketPath) {
-        onStartScenario(repo, data.sessionId, data.websocketPath);
+      // MODIFIED: Check for endTime and pass it to onStartScenario
+      if (responseData.sessionId && responseData.websocketPath && typeof responseData.endTime === 'number') {
+        console.log('Scenario initialized by backend:', responseData);
+        // Pass all data including initialEndTime (which is responseData.endTime)
+        onStartScenario(repo, responseData.sessionId, responseData.websocketPath, responseData.endTime);
       } else {
-        console.error("Server response missing session ID or WebSocket path.", data);
-        throw new Error("Server response missing session ID or WebSocket path.");
+        console.error("Server response missing session ID, WebSocket path, or valid endTime.", responseData);
+        throw new Error("Server response missing critical data (sessionId, websocketPath, or endTime).");
       }
     } catch (err) {
-      console.error("Failed to start scenario:", err);
-      setError(err.message);
+      console.error("Error in handleStartClick:", err);
+      setError(err.message || "An unknown error occurred.");
     } finally {
       setLoading(false);
     }
@@ -92,7 +81,9 @@ function ScenarioCard({ label, repo, onStartScenario }) {
 ScenarioCard.propTypes = {
   label: PropTypes.string.isRequired,
   repo: PropTypes.string.isRequired,
-  onStartScenario: PropTypes.func.isRequired,
+  // MODIFIED: onStartScenario now expects (repoName, sessionId, websocketPath, initialEndTimeEpoch)
+  onStartScenario: PropTypes.func.isRequired, 
 };
 
 export default ScenarioCard;
+// --- END client/src/components/ScenarioCard.jsx ---
